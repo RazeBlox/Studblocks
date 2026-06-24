@@ -1,0 +1,642 @@
+local ChangeHistoryService = game:GetService("ChangeHistoryService")
+local HttpService = game:GetService("HttpService")
+local InsertService = game:GetService("InsertService")
+local Selection = game:GetService("Selection")
+local UserInputService = game:GetService("UserInputService")
+
+local BUTTON_ID = "OptimizeSelection"
+local WIDGET_ID = "StudMeshOptimizerWidget"
+local DEFAULT_BACKEND_URL = "http://127.0.0.1:8790"
+local DEFAULT_TEXTURE_SCALE = 1.25
+local DEFAULT_TEXTURE_OPACITY = 0.45
+local MAX_TEXTURE_OPACITY = 2.5
+local OPACITY_SEND_MULTIPLIER = 2
+
+local pluginToolbar = plugin:CreateToolbar("Mesh Optimizer")
+local toggleButton = pluginToolbar:CreateButton(
+	BUTTON_ID,
+	"Optimize the selected model through a local backend",
+	"rbxasset://textures/PluginManagement/add.png"
+)
+toggleButton.ClickableWhenViewportHidden = true
+
+local widgetInfo = DockWidgetPluginGuiInfo.new(
+	Enum.InitialDockState.Right,
+	true,
+	false,
+	380,
+	480,
+	320,
+	320
+)
+
+local widget = plugin:CreateDockWidgetPluginGui(WIDGET_ID, widgetInfo)
+widget.Title = "Stud Mesh Optimizer"
+
+local root = Instance.new("Frame")
+root.Size = UDim2.fromScale(1, 1)
+root.BackgroundColor3 = Color3.fromRGB(33, 33, 33)
+root.BorderSizePixel = 0
+root.Parent = widget
+
+local layout = Instance.new("UIListLayout")
+layout.Padding = UDim.new(0, 8)
+layout.FillDirection = Enum.FillDirection.Vertical
+layout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+layout.SortOrder = Enum.SortOrder.LayoutOrder
+layout.Parent = root
+
+local padding = Instance.new("UIPadding")
+padding.PaddingTop = UDim.new(0, 12)
+padding.PaddingBottom = UDim.new(0, 12)
+padding.PaddingLeft = UDim.new(0, 12)
+padding.PaddingRight = UDim.new(0, 12)
+padding.Parent = root
+
+local function makeLabel(text, height)
+	local label = Instance.new("TextLabel")
+	label.Size = UDim2.new(1, 0, 0, height or 18)
+	label.BackgroundTransparency = 1
+	label.TextXAlignment = Enum.TextXAlignment.Left
+	label.Font = Enum.Font.SourceSans
+	label.TextSize = 15
+	label.TextColor3 = Color3.fromRGB(232, 232, 232)
+	label.Text = text
+	label.Parent = root
+	return label
+end
+
+local function makeBox(placeholder, defaultValue)
+	local box = Instance.new("TextBox")
+	box.Size = UDim2.new(1, 0, 0, 30)
+	box.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+	box.BorderColor3 = Color3.fromRGB(60, 60, 60)
+	box.ClearTextOnFocus = false
+	box.Font = Enum.Font.Code
+	box.PlaceholderText = placeholder
+	box.Text = defaultValue
+	box.TextColor3 = Color3.fromRGB(245, 245, 245)
+	box.TextSize = 14
+	box.Parent = root
+	return box
+end
+
+local function makeSection(text)
+	local label = makeLabel(text)
+	label.Font = Enum.Font.SourceSansBold
+	label.TextSize = 16
+	return label
+end
+
+local function roundColor(channel)
+	return math.floor(channel * 255 + 0.5)
+end
+
+local function clamp(value, minValue, maxValue)
+	return math.max(minValue, math.min(maxValue, value))
+end
+
+local function roundTo(value, step)
+	return math.floor(value / step + 0.5) * step
+end
+
+local function formatSliderValue(value)
+	return string.format("%.2f", value)
+end
+
+local function createSliderRow(labelText, minValue, maxValue, step, defaultValue)
+	local row = Instance.new("Frame")
+	row.Size = UDim2.new(1, 0, 0, 52)
+	row.BackgroundTransparency = 1
+	row.Parent = root
+
+	local title = Instance.new("TextLabel")
+	title.Size = UDim2.new(1, -70, 0, 18)
+	title.BackgroundTransparency = 1
+	title.TextXAlignment = Enum.TextXAlignment.Left
+	title.Font = Enum.Font.SourceSans
+	title.TextSize = 15
+	title.TextColor3 = Color3.fromRGB(232, 232, 232)
+	title.Text = labelText
+	title.Parent = row
+
+	local valueLabel = Instance.new("TextLabel")
+	valueLabel.Size = UDim2.new(0, 64, 0, 18)
+	valueLabel.Position = UDim2.new(1, -64, 0, 0)
+	valueLabel.BackgroundTransparency = 1
+	valueLabel.TextXAlignment = Enum.TextXAlignment.Right
+	valueLabel.Font = Enum.Font.Code
+	valueLabel.TextSize = 14
+	valueLabel.TextColor3 = Color3.fromRGB(190, 190, 190)
+	valueLabel.Parent = row
+
+	local track = Instance.new("Frame")
+	track.Size = UDim2.new(1, 0, 0, 8)
+	track.Position = UDim2.new(0, 0, 0, 30)
+	track.BackgroundColor3 = Color3.fromRGB(58, 58, 58)
+	track.BorderSizePixel = 0
+	track.Parent = row
+
+	local trackCorner = Instance.new("UICorner")
+	trackCorner.CornerRadius = UDim.new(1, 0)
+	trackCorner.Parent = track
+
+	local fill = Instance.new("Frame")
+	fill.Size = UDim2.new(0, 0, 1, 0)
+	fill.BackgroundColor3 = Color3.fromRGB(230, 230, 230)
+	fill.BorderSizePixel = 0
+	fill.Parent = track
+
+	local fillCorner = Instance.new("UICorner")
+	fillCorner.CornerRadius = UDim.new(1, 0)
+	fillCorner.Parent = fill
+
+	local knob = Instance.new("Frame")
+	knob.Size = UDim2.fromOffset(14, 14)
+	knob.AnchorPoint = Vector2.new(0.5, 0.5)
+	knob.Position = UDim2.new(0, 0, 0.5, 0)
+	knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	knob.BorderSizePixel = 0
+	knob.Parent = track
+
+	local knobCorner = Instance.new("UICorner")
+	knobCorner.CornerRadius = UDim.new(1, 0)
+	knobCorner.Parent = knob
+
+	local slider = {
+		value = defaultValue,
+		minValue = minValue,
+		maxValue = maxValue,
+		step = step,
+		row = row,
+		track = track,
+		valueLabel = valueLabel,
+		fill = fill,
+		knob = knob,
+	}
+
+	function slider:SetValue(nextValue)
+		local snapped = roundTo(clamp(nextValue, self.minValue, self.maxValue), self.step)
+		self.value = snapped
+		local alpha = (snapped - self.minValue) / (self.maxValue - self.minValue)
+		self.fill.Size = UDim2.new(alpha, 0, 1, 0)
+		self.knob.Position = UDim2.new(alpha, 0, 0.5, 0)
+		self.valueLabel.Text = formatSliderValue(snapped)
+	end
+
+	slider:SetValue(defaultValue)
+	return slider
+end
+
+makeSection("Backend")
+local backendBox = makeBox(DEFAULT_BACKEND_URL, plugin:GetSetting("BackendUrl") or DEFAULT_BACKEND_URL)
+
+makeSection("Upload Owner")
+local creatorTypeBox = makeBox("user", plugin:GetSetting("CreatorType") or "user")
+local creatorIdBox = makeBox("12345678", plugin:GetSetting("CreatorId") or "")
+
+makeSection("Texture")
+local textureScaleSlider = createSliderRow(
+	"Stud Size",
+	0.5,
+	3.0,
+	0.05,
+	tonumber(plugin:GetSetting("TextureScale")) or DEFAULT_TEXTURE_SCALE
+)
+local textureOpacitySlider = createSliderRow(
+	"Stud Opacity",
+	0.0,
+	MAX_TEXTURE_OPACITY,
+	0.05,
+	tonumber(plugin:GetSetting("TextureOpacity")) or DEFAULT_TEXTURE_OPACITY
+)
+
+local previewLabel = makeLabel("Preview")
+previewLabel.Font = Enum.Font.SourceSansBold
+previewLabel.TextSize = 16
+
+local previewFrame = Instance.new("Frame")
+previewFrame.Size = UDim2.new(1, 0, 0, 120)
+previewFrame.BackgroundColor3 = Color3.fromRGB(160, 199, 255)
+previewFrame.BorderSizePixel = 0
+previewFrame.ClipsDescendants = true
+previewFrame.Parent = root
+
+local previewCorner = Instance.new("UICorner")
+previewCorner.CornerRadius = UDim.new(0, 8)
+previewCorner.Parent = previewFrame
+
+local previewShade = Instance.new("Frame")
+previewShade.Size = UDim2.fromScale(1, 1)
+previewShade.BackgroundColor3 = Color3.fromRGB(100, 140, 210)
+previewShade.BackgroundTransparency = 0.25
+previewShade.BorderSizePixel = 0
+previewShade.Parent = previewFrame
+
+local previewStuds = Instance.new("Frame")
+previewStuds.Size = UDim2.fromScale(1, 1)
+previewStuds.BackgroundTransparency = 1
+previewStuds.Parent = previewFrame
+
+local previewHint = makeLabel("Larger stud size means fewer repeats. Opacity above 1.00 pushes the studs darker.", 34)
+previewHint.TextWrapped = true
+previewHint.TextYAlignment = Enum.TextYAlignment.Top
+previewHint.TextColor3 = Color3.fromRGB(190, 190, 190)
+
+local optimizeButton = Instance.new("TextButton")
+optimizeButton.Size = UDim2.new(1, 0, 0, 34)
+optimizeButton.BackgroundColor3 = Color3.fromRGB(240, 240, 240)
+optimizeButton.BorderSizePixel = 0
+optimizeButton.Font = Enum.Font.SourceSansBold
+optimizeButton.Text = "Optimize Selected Model"
+optimizeButton.TextColor3 = Color3.fromRGB(18, 18, 18)
+optimizeButton.TextSize = 16
+optimizeButton.Parent = root
+
+local statusLabel = makeLabel("Ready.", 70)
+statusLabel.TextWrapped = true
+statusLabel.TextYAlignment = Enum.TextYAlignment.Top
+
+local function setStatus(text, isError)
+	statusLabel.Text = text
+	statusLabel.TextColor3 = isError and Color3.fromRGB(255, 161, 161) or Color3.fromRGB(232, 232, 232)
+end
+
+local function saveSettings()
+	plugin:SetSetting("BackendUrl", backendBox.Text)
+	plugin:SetSetting("CreatorType", creatorTypeBox.Text)
+	plugin:SetSetting("CreatorId", creatorIdBox.Text)
+	plugin:SetSetting("TextureScale", textureScaleSlider.value)
+	plugin:SetSetting("TextureOpacity", textureOpacitySlider.value)
+end
+
+local function updatePreview()
+	previewStuds:ClearAllChildren()
+
+	local scale = textureScaleSlider.value
+	local opacity = textureOpacitySlider.value
+	local stepPixels = math.floor(24 * scale + 0.5)
+	local studSize = math.max(8, math.floor(stepPixels * 0.68 + 0.5))
+	local alpha = clamp(opacity / MAX_TEXTURE_OPACITY, 0, 1)
+
+	for x = 0, previewFrame.AbsoluteSize.X + stepPixels, stepPixels do
+		for y = 0, previewFrame.AbsoluteSize.Y + stepPixels, stepPixels do
+			local stud = Instance.new("Frame")
+			stud.Size = UDim2.fromOffset(studSize, studSize)
+			stud.Position = UDim2.fromOffset(x - studSize // 2, y - studSize // 2)
+			stud.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+			stud.BackgroundTransparency = 1 - alpha * 0.95
+			stud.BorderSizePixel = 0
+			stud.Parent = previewStuds
+
+			local studCorner = Instance.new("UICorner")
+			studCorner.CornerRadius = UDim.new(1, 0)
+			studCorner.Parent = stud
+
+			local highlight = Instance.new("Frame")
+			highlight.Size = UDim2.fromScale(0.45, 0.45)
+			highlight.Position = UDim2.fromScale(0.18, 0.15)
+			highlight.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+			highlight.BackgroundTransparency = 1 - alpha * 0.18
+			highlight.BorderSizePixel = 0
+			highlight.Parent = stud
+
+			local highlightCorner = Instance.new("UICorner")
+			highlightCorner.CornerRadius = UDim.new(1, 0)
+			highlightCorner.Parent = highlight
+		end
+	end
+end
+
+local function wireSlider(slider, onChanged)
+	local dragging = false
+
+	local function setFromInput(input)
+		local trackX = slider.track.AbsolutePosition.X
+		local width = slider.track.AbsoluteSize.X
+		if width <= 0 then
+			return
+		end
+
+		local alpha = clamp((input.Position.X - trackX) / width, 0, 1)
+		local value = slider.minValue + (slider.maxValue - slider.minValue) * alpha
+		slider:SetValue(value)
+		onChanged()
+	end
+
+	local function beginDrag(input)
+		if input.UserInputType ~= Enum.UserInputType.MouseButton1 then
+			return
+		end
+
+		dragging = true
+		setFromInput(input)
+	end
+
+	local function endDrag(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			dragging = false
+		end
+	end
+
+	slider.track.InputBegan:Connect(beginDrag)
+	slider.knob.InputBegan:Connect(beginDrag)
+
+	slider.track.InputEnded:Connect(endDrag)
+	slider.knob.InputEnded:Connect(endDrag)
+
+	UserInputService.InputChanged:Connect(function(input)
+		if not dragging or input.UserInputType ~= Enum.UserInputType.MouseMovement then
+			return
+		end
+
+		setFromInput(input)
+	end)
+end
+
+wireSlider(textureScaleSlider, updatePreview)
+wireSlider(textureOpacitySlider, updatePreview)
+updatePreview()
+
+previewFrame:GetPropertyChangedSignal("AbsoluteSize"):Connect(updatePreview)
+
+local function getMeshGroupPath(selectionRoot, part)
+	if selectionRoot:IsA("BasePart") then
+		return selectionRoot.Name
+	end
+
+	local current = part.Parent
+
+	while current and current ~= selectionRoot do
+		if current.Parent == selectionRoot and current:IsA("Model") then
+			return current.Name
+		end
+		current = current.Parent
+	end
+
+	return selectionRoot.Name
+end
+
+local function collectParts(selectionRoot)
+	local parts = {}
+
+	if selectionRoot:IsA("BasePart") then
+		table.insert(parts, selectionRoot)
+		return parts
+	end
+
+	for _, descendant in ipairs(selectionRoot:GetDescendants()) do
+		if descendant:IsA("BasePart") then
+			table.insert(parts, descendant)
+		end
+	end
+
+	return parts
+end
+
+local function serializeSelection(selectionRoot)
+	local parts = collectParts(selectionRoot)
+	if #parts == 0 then
+		error("The selection does not contain any BaseParts.")
+	end
+
+	local pivot = selectionRoot:IsA("Model") and selectionRoot:GetPivot() or selectionRoot.CFrame
+	local payloadParts = {}
+
+	for _, part in ipairs(parts) do
+		if not part:IsA("Part") or part.Shape ~= Enum.PartType.Block then
+			error("Only normal Block Parts are supported right now.")
+		end
+
+		local relative = pivot:ToObjectSpace(part.CFrame)
+		local rx, ry, rz = relative:ToOrientation()
+		local _, _, _, r00, r01, r02, r10, r11, r12, r20, r21, r22 = relative:GetComponents()
+		table.insert(payloadParts, {
+			name = part.Name,
+			meshGroup = getMeshGroupPath(selectionRoot, part),
+			size = { part.Size.X, part.Size.Y, part.Size.Z },
+			pos = { relative.Position.X, relative.Position.Y, relative.Position.Z },
+			rot = { math.deg(rx), math.deg(ry), math.deg(rz) },
+			rotationMatrix = { r00, r01, r02, r10, r11, r12, r20, r21, r22 },
+			rgb = {
+				roundColor(part.Color.R),
+				roundColor(part.Color.G),
+				roundColor(part.Color.B),
+			},
+		})
+	end
+
+	return {
+		modelName = selectionRoot.Name,
+		upload = true,
+		creator = {
+			type = string.lower(creatorTypeBox.Text),
+			id = creatorIdBox.Text,
+		},
+		texture = {
+			scale = textureScaleSlider.value,
+			opacity = textureOpacitySlider.value * OPACITY_SEND_MULTIPLIER,
+		},
+		parts = payloadParts,
+	}, pivot
+end
+
+local function requestOptimize(payload)
+	local baseUrl = backendBox.Text:gsub("/$", "")
+	local healthResponse = HttpService:RequestAsync({
+		Url = baseUrl .. "/health",
+		Method = "GET",
+	})
+
+	if not healthResponse.Success then
+		error("Could not reach the local backend health endpoint.")
+	end
+
+	local healthData = HttpService:JSONDecode(healthResponse.Body)
+	if not healthData.uploadConfigured then
+		error("The backend is running, but ROBLOX_OPEN_CLOUD_API_KEY is not set on that server process.")
+	end
+	if healthData.optimizerConfigured == false then
+		local missing = ""
+		if typeof(healthData.optimizer) == "table" and typeof(healthData.optimizer.missing) == "table" then
+			local parts = {}
+			for _, item in ipairs(healthData.optimizer.missing) do
+				table.insert(parts, tostring(item))
+			end
+			if #parts > 0 then
+				missing = " Missing: " .. table.concat(parts, ", ")
+			end
+		end
+		error("The backend is running, but the external optimizer pipeline is not configured." .. missing)
+	end
+
+	local response = HttpService:RequestAsync({
+		Url = baseUrl .. "/optimize",
+		Method = "POST",
+		Headers = {
+			["Content-Type"] = "application/json",
+		},
+		Body = HttpService:JSONEncode(payload),
+	})
+
+	if not response.Success then
+		local detail = response.StatusMessage ~= "" and response.StatusMessage or "Request failed"
+		if response.Body and response.Body ~= "" then
+			local ok, decoded = pcall(function()
+				return HttpService:JSONDecode(response.Body)
+			end)
+			if ok and typeof(decoded) == "table" and typeof(decoded.error) == "string" then
+				detail = decoded.error
+			else
+				detail = detail .. ": " .. response.Body
+			end
+		end
+		error(detail)
+	end
+
+	local data = HttpService:JSONDecode(response.Body)
+	if not data.ok then
+		error(data.error or "The backend returned an error.")
+	end
+
+	if typeof(data.assetId) ~= "number" then
+		error("The backend finished, but it did not return an assetId.")
+	end
+
+	return data
+end
+
+local function formatByteCount(value)
+	if typeof(value) ~= "number" then
+		return "?"
+	end
+
+	if value >= 1024 * 1024 then
+		return string.format("%.2f MB", value / (1024 * 1024))
+	end
+
+	if value >= 1024 then
+		return string.format("%.1f KB", value / 1024)
+	end
+
+	return string.format("%d B", value)
+end
+
+local function addOptimizedResult(selectionRoot, pivot, assetId)
+	local loaded
+
+	for _ = 1, 10 do
+		local ok, result = pcall(function()
+			return InsertService:LoadAsset(assetId)
+		end)
+		if ok then
+			loaded = result
+			if result and #result:GetDescendants() > 0 then
+				break
+			end
+			result:Destroy()
+		end
+		task.wait(2)
+	end
+
+	if not loaded then
+		error("The uploaded asset is not available to insert yet.")
+	end
+
+	loaded.Name = selectionRoot.Name .. "_Optimized"
+	loaded.Parent = workspace
+
+	local extents = selectionRoot:IsA("Model") and selectionRoot:GetExtentsSize() or selectionRoot.Size
+	local offsetPivot = pivot * CFrame.new(extents.X + 4, 0, 0)
+	local okPivot = pcall(function()
+		loaded:PivotTo(offsetPivot)
+	end)
+	if not okPivot then
+		for _, descendant in ipairs(loaded:GetDescendants()) do
+			if descendant:IsA("BasePart") then
+				descendant.CFrame = offsetPivot
+				break
+			end
+		end
+	end
+
+	ChangeHistoryService:SetWaypoint("Add optimized mesh")
+	Selection:Set({ loaded })
+end
+
+local function buildStatusLine(data)
+	local stats = data.stats or {}
+	local texture = data.texture or {}
+	local optimization = data.optimization or {}
+	local sourceFaces = tostring(stats.sourceFaces or "?")
+	local outputFaces = tostring(stats.outputFaces or "?")
+	local culledFaces = tostring(stats.fullyCulledFaces or 0)
+	local mergedFaces = tostring(stats.mergedFaces or 0)
+	local meshGroups = tostring(stats.meshGroups or 1)
+	local scale = tostring(texture.scale or "?")
+	local opacity = tostring(texture.opacity or "?")
+	local signature = tostring(texture.signature or "?")
+	local sourceBytes = formatByteCount(optimization.sourceGlbBytes)
+	local uploadBytes = formatByteCount(optimization.uploadGlbBytes or data.glbBytes)
+	local packedBytes = formatByteCount(optimization.finalGlbBytes)
+	local usedPacked = optimization.usedPackedGlbForUpload == true
+
+	local status = string.format(
+		"Done. Asset %d uploaded. %s source -> %s output across %s mesh groups. Hidden removed: %s. Merged: %s. Upload GLB %s -> %s. Texture scale %s opacity %s (%s).",
+		data.assetId,
+		sourceFaces,
+		outputFaces,
+		meshGroups,
+		culledFaces,
+		mergedFaces,
+		sourceBytes,
+		uploadBytes,
+		scale,
+		opacity,
+		signature
+	)
+
+	if packedBytes ~= "?" and not usedPacked then
+		status = status .. string.format(" Packed artifact: %s.", packedBytes)
+	end
+
+	return status
+end
+
+local function optimizeSelection()
+	saveSettings()
+
+	local selection = Selection:Get()
+	if #selection ~= 1 then
+		error("Select exactly one Model or Part.")
+	end
+
+	local selectionRoot = selection[1]
+	if not selectionRoot:IsA("Model") and not selectionRoot:IsA("BasePart") then
+		error("Select a Model or a Part.")
+	end
+
+	setStatus("Uploading selection to the local backend...", false)
+	local payload, pivot = serializeSelection(selectionRoot)
+	local data = requestOptimize(payload)
+	setStatus("Loading uploaded asset back into Studio...", false)
+	addOptimizedResult(selectionRoot, pivot, data.assetId)
+	setStatus(buildStatusLine(data), false)
+end
+
+optimizeButton.MouseButton1Click:Connect(function()
+	local ok, result = pcall(optimizeSelection)
+	if not ok then
+		setStatus(result, true)
+	end
+end)
+
+toggleButton.Click:Connect(function()
+	widget.Enabled = not widget.Enabled
+end)
+
+widget:GetPropertyChangedSignal("Enabled"):Connect(function()
+	toggleButton:SetActive(widget.Enabled)
+end)
+
+setStatus("Ready. Studio HTTP must be enabled, and the backend must be running.", false)

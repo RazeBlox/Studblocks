@@ -3,3 +3,6 @@ __pycache__/
 build/
 dist/
 *.log
+backend/opencloud_key.txt
+backend/out/
+backend/probe.json
